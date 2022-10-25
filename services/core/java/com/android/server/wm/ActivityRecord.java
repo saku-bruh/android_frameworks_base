@@ -302,11 +302,13 @@ import android.os.PersistableBundle;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
+import android.os.SystemProperties;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.service.contentcapture.ActivityEvent;
 import android.service.dreams.DreamActivity;
 import android.service.voice.IVoiceInteractionSession;
+import android.util.BoostFramework;
 import android.util.ArraySet;
 import android.util.EventLog;
 import android.util.Log;
@@ -477,6 +479,7 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
     private int labelRes;           // the label information from the package mgr.
     private int icon;               // resource identifier of activity's icon.
     private int theme;              // resource identifier of activity's theme.
+    public int perfActivityBoostHandler = -1; //perflock handler when activity is created.
     private Task task;              // the task this is in.
     private long createTime = System.currentTimeMillis();
     long lastVisibleTime;         // last time this activity became visible
@@ -540,6 +543,8 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
                                         // process that it is hidden.
     private boolean mLastDeferHidingClient; // If true we will defer setting mClientVisible to false
                                            // and reporting to the client that it is hidden.
+    public boolean launching;      // is activity launch in progress?
+    public boolean translucentWindowLaunch; // a translucent window launch?
     boolean nowVisible;     // is this activity's window visible?
     public boolean launching;      // is activity launch in progress?
     public boolean translucentWindowLaunch; // a translucent window launch?
@@ -636,6 +641,12 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
 
     boolean pendingVoiceInteractionStart;   // Waiting for activity-invoked voice session
     IVoiceInteractionSession voiceSession;  // Voice interaction session for this activity
+
+    public BoostFramework mPerf = null;
+    public BoostFramework mPerf_iop = null;
+
+    private final boolean isLowRamDevice =
+            SystemProperties.getBoolean("ro.config.low_ram", false);
 
     boolean mVoiceInteraction;
 
@@ -2166,6 +2177,9 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
         mActivityRecordInputSink = new ActivityRecordInputSink(this, sourceRecord);
 
         updateEnterpriseThumbnailDrawable(mAtmService.getUiContext());
+
+        if (mPerf == null)
+            mPerf = new BoostFramework();
     }
 
     /**
@@ -3723,6 +3737,7 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
         }
         makeFinishingLocked();
 
+        getRootTask().onARStopTriggered(this);
         final boolean activityRemoved = destroyImmediately("finish-imm:" + reason);
 
         // If the display does not have running activity, the configuration may need to be
@@ -6203,6 +6218,11 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
 
         if (isActivityTypeHome()) {
             mTaskSupervisor.updateHomeProcess(task.getBottomMostActivity().app);
+            try {
+                mTaskSupervisor.new PreferredAppsTask().execute();
+            } catch (Exception e) {
+                Slog.v (TAG, "Exception: " + e);
+            }
         }
 
         if (nowVisible) {
@@ -6326,6 +6346,7 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
             ProtoLog.v(WM_DEBUG_STATES, "Moving to STOPPING: %s (stop requested)", this);
 
             setState(STOPPING, "stopIfPossible");
+	    getRootTask().onARStopTriggered(this);
             if (DEBUG_VISIBILITY) {
                 Slog.v(TAG_VISIBILITY, "Stopping:" + this);
             }
@@ -6664,6 +6685,12 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
 
     /** Called when the windows associated app window container are drawn. */
     private void onWindowsDrawn(long timestampNs) {
+	if (mPerf != null && perfActivityBoostHandler > 0) {
+            mPerf.perfLockReleaseHandler(perfActivityBoostHandler);
+            perfActivityBoostHandler = -1;
+        } else if (perfActivityBoostHandler > 0) {
+            Slog.w(TAG, "activity boost didn't release as expected");
+        }
         final TransitionInfoSnapshot info = mTaskSupervisor
                 .getActivityMetricsLogger().notifyWindowsDrawn(this, timestampNs);
         final boolean validInfo = info != null;
@@ -7408,6 +7435,15 @@ public final class ActivityRecord extends WindowToken implements WindowManagerSe
     @VisibleForTesting
     boolean shouldAnimate() {
         return task == null || task.shouldAnimate();
+    }
+
+    public int isAppInfoGame() {
+        int isGame = 0;
+        if (info.applicationInfo != null) {
+            isGame = (info.applicationInfo.category == ApplicationInfo.CATEGORY_GAME ||
+                      (info.applicationInfo.flags & ApplicationInfo.FLAG_IS_GAME) == ApplicationInfo.FLAG_IS_GAME) ? 1 : 0;
+        }
+        return isGame;
     }
 
     /**
