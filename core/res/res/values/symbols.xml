@@ -4950,4 +4950,7 @@
   <java-symbol type="anim" name="activity_freeform_open_exit" />
   <java-symbol type="anim" name="activity_freeform_close_enter" />
   <java-symbol type="anim" name="activity_freeform_close_exit" />
+
+  <!-- Boost Framework -->
+  <java-symbol type="bool" name="config_supportsBoostFramework" />
 </resources>
